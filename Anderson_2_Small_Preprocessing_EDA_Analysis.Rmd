@@ -1,0 +1,657 @@
+---
+title: "141xp_Analysis"
+author: "euijun kim"
+date: "2023-03-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+library(tidyverse)
+library(tidymodels)
+library(lubridate)
+library(glmnet)
+library(xgboost)
+library(reshape2)
+library(ranger)
+library(ggplot2)
+library(car)
+library(readxl)
+library(dplyr)
+library(caret)
+library(psych)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+# Read the data and find some unnecessary and remove by hand first.
+
+```{r}
+getwd()
+# 'SCHOOL_MOTHER_YRS' %in% colnames(Demo_df) # There are some variables that only CNP data has. ex) CortexVol
+CNP_df <- read_excel("CNP.xlsx")
+CNP_df <- subset(CNP_df, select = -c(...1)) # removing some unnecessary variables
+CNP_df = as.data.frame(CNP_df)
+
+Birth_df <- read.csv("BirthYearsofCNP.csv") # looks okay
+
+Demo_df <- read.csv("HTAC_Demographics_Full.csv")
+Demo_df <- subset(Demo_df, select = -c(PATIENTS_NIMHID,SUBJECTID,SWITCHPTID,DEMO_INITIALS)) # removing some unnecessary variables.
+
+
+Memory_df <- read.csv("WM_RI_G_Scores_All_Available.csv")
+names(Memory_df)[2] <- "PTID"
+Memory_df = Memory_df[,-c(1,3)] # removing some unnecessary variables
+sum(is.na(Memory_df))
+CNP_three <- subset(CNP_df, select = c(PTID, VWM_G, SWM_G))
+merged_CNP_three <- merge(Memory_df, CNP_three, by = "PTID", all.x = TRUE)
+merged_CNP_three$VWM_G <- ifelse(is.na(merged_CNP_three$VWM_G.x), merged_CNP_three$VWM_G.y, merged_CNP_three$VWM_G.x)
+merged_CNP_three$SWM_G <- ifelse(is.na(merged_CNP_three$SWM_G.x), merged_CNP_three$SWM_G.y, merged_CNP_three$SWM_G.x)
+Memory_df <- subset(merged_CNP_three, select = c(PTID, VWM_G, SWM_G))
+
+Health_df <- read_excel("HTAC_Qry_1405Health.xls") # This is optional data, so I won't do anything for now.
+Health_df = as.data.frame(Health_df)
+
+
+Hopkins_df <- read.csv("ChapmanHAMDHopkins_All.csv") # Here, Hopkins data has a lot of NAs. Let's take a look.
+new_Hopkins_df <- read_excel("HTAC_Qry_1516.xls")
+Hopkins_df$BMI = new_Hopkins_df$BMI
+```
+
+
+# Merge
+
+```{r}
+####
+smaller_df <- CNP_df
+merged <- merge(smaller_df, Birth_df, by = "PTID", all.x = TRUE)
+
+new_cols <- setdiff(names(Birth_df), names(smaller_df))
+
+for (col in new_cols) {
+  smaller_df[[col]] <- merged[[col]]
+}
+
+merged <- merge(smaller_df, Hopkins_df, by = "PTID", all.x = TRUE)
+
+new_cols <- setdiff(names(Hopkins_df), names(smaller_df))
+
+for (col in new_cols) {
+  smaller_df[[col]] <- merged[[col]]
+}
+
+merged <- merge(smaller_df, Demo_df, by = "PTID", all.x = TRUE)
+new_cols <- setdiff(names(Demo_df), names(smaller_df))
+
+for (col in new_cols) {
+  smaller_df[[col]] <- merged[[col]]
+}
+
+
+dup_cols2 <- duplicated(tolower(names(smaller_df)))
+
+# print the duplicate column names, if any
+if (any(dup_cols2)) {
+  cat("Duplicate column names: ", names(df)[dup_cols2], "\n")
+} else {
+  cat("No duplicate column names.\n")
+}
+```
+
+
+
+
+
+# There are some columns that we need to round up.
+
+```{r}
+smaller_df$AGE <- round(smaller_df$AGE)
+```
+
+
+# Create zodiac
+
+```{r}
+year_to_zodiac <- function(year) {
+  # Define the start year for the Chinese zodiac cycle (1900 is the year of the Rat)
+  start_year <- 1900
+  
+  # Define the names of the zodiac animals
+  animal_names <- c("Rat", "Ox", "Tiger", "Rabbit", "Dragon", "Snake", "Horse", "Sheep", "Monkey", "Rooster", "Dog", "Pig")
+  
+  # Calculate the index of the zodiac animal based on the year
+  animal_index <- (year - start_year) %% 12
+  
+  # Return the name of the corresponding zodiac animal
+  return(animal_names[animal_index + 1])
+}
+
+# Use the "year" column directly to get the corresponding Chinese zodiac sign
+smaller_df$zodiac <- year_to_zodiac(smaller_df$YEAR)
+```
+
+
+# Handle ordinal/nominal variables
+
+```{r}
+factor_cols <-
+  c(
+    "MOTHER_ETH_MAIN",
+    "FATHER_ETH_MAIN",
+    "OCCUPATION",
+    "RESPONSJOB",
+    "zodiac"
+  )
+
+for (col in factor_cols) {
+  smaller_df[[col]] <- as.factor(smaller_df[[col]])
+}
+
+weird_cols2 <- c("RESPONSJOB","MOTHER_ETH_MAIN", "FATHER_ETH_MAIN","OCCUPATION")
+
+weird_values <- c("-9999", "-9998")
+
+# Remove rows with weird values in any of the specified columns
+small_df_removing_weird_value <- smaller_df[!apply(smaller_df[, weird_cols2], 1, function(x) any(x %in% weird_values)), ]
+
+small_df_removing_weird_value$MOTHER_ETH_MAIN <-  droplevels(small_df_removing_weird_value$MOTHER_ETH_MAIN)
+small_df_removing_weird_value$FATHER_ETH_MAIN <-  droplevels(small_df_removing_weird_value$FATHER_ETH_MAIN)
+small_df_removing_weird_value$OCCUPATION <-  droplevels(small_df_removing_weird_value$OCCUPATION)
+small_df_removing_weird_value$RESPONSJOB <-  droplevels(small_df_removing_weird_value$RESPONSJOB)
+smaller_df <- small_df_removing_weird_value
+```
+
+
+
+# Remove some variables
+```{r}
+# zodiac
+# OCCUPATION
+# AGE
+# RESPONSJOB
+# FATHER_ETH_MAIN
+# MOTHER_ETH_MAIN
+smaller_df_remove <-
+  subset(
+    smaller_df,
+    select = c(
+      PTID,
+      VWM_G,
+      SWM_G,
+      Visual_Global_Efficiency,
+      Somatomotor_Global_Efficiency,
+      Dorsal_Attention_Global_Efficiency,
+      Ventral_Attention_Global_Efficiency,
+      Limbic_Global_Efficiency,
+      Frontoparietal_Global_Efficiency,
+      Default_Mode_Global_Efficiency,
+      Left.Amygdala,
+      Right.Amygdala,
+      Left.Caudate,
+      Right.Caudate,
+      Left.Accumbens.area,
+      Right.Accumbens.area,
+      TotalGrayVol,
+      CortexVol,
+      CorticalWhiteMatterVol,
+      Left.Putamen,
+      Right.Putamen,
+      Left.Pallidum,
+      Right.Pallidum,
+      Left.Hippocampus,
+      Right.Hippocampus,
+      WM.hypointensities,
+      non.WM.hypointensities,
+      zodiac,
+      OCCUPATION,
+      AGE,
+      RESPONSJOB,
+      FATHER_ETH_MAIN,
+      MOTHER_ETH_MAIN
+    )
+  )
+smaller_df <- smaller_df_remove
+```
+
+
+
+
+
+# Smaller data drop NA
+
+```{r}
+sum(is.na(smaller_df))
+# Use colSums() to count the number of NA values in each column
+na_counts <- colSums(is.na(smaller_df))
+
+
+## Dealing with NA values
+smaller_df_NA_drop <- drop_na(smaller_df)
+
+sum(is.na(smaller_df_NA_drop))
+
+```
+
+
+
+
+
+
+
+
+## EDA for small data
+
+```{r}
+library(dplyr)
+# install.packages("GGally")
+source("https://raw.githubusercontent.com/briatte/ggcorr/master/ggcorr.R")
+library(ggplot2)
+
+small <- smaller_df_NA_drop
+
+## 0. get information about each variable of dataset
+# 214 observations and 33 variables 
+ncol(small)
+nrow(small)
+
+## 1. Understand the dataset structure
+#total 64(numeric - 28, factor - 5)
+str(small)
+
+## 1.1 Response Variable Histogram
+ggplot(data = small) +
+  geom_histogram(mapping = aes(x = VWM_G), binwidth = 0.5)
+# most of VWM_G values are near around 0
+ggplot(data = small) +
+  geom_histogram(mapping = aes(x = SWM_G), binwidth = 0.5)
+# most of SWM_G values are near around 0.5 
+
+## 2. Check for missing values
+sum(is.na(small))
+
+## 3. Summarize numerical and factor variables
+small_numeric <- small[sapply(small, is.numeric)]
+small_factor <- small[sapply(small, is.factor)]
+# summary(small_numeric)
+# summary(small_factor)
+```
+
+
+## Check correlation for small
+
+```{r}
+# We found there could be problem multicollinearity
+cor_df <- cor(small_numeric)
+# summary(cor_df)
+df <- data.frame(var1 = rep(colnames(cor_df), each = ncol(cor_df)), var2 = rep(colnames(cor_df), ncol(cor_df)), corr = c(cor_df))
+ggplot(data = subset(df, abs(corr) >= 0.7), aes(x = var1, y = var2, fill = corr)) + 
+  geom_tile() + 
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, limits = c(-1,1)) + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, size = 10, hjust = 1))
+```
+
+
+## Check numeric for small
+
+```{r}
+# colnames(small_numeric)
+par(mfrow = c(2,2))#6
+hist(small_numeric$AGE, main='AGE')
+hist(small_numeric$VWM_G, main='VWM_G')
+hist(small_numeric$SWM_G, main='SWM_G')
+
+
+par(mfrow = c(3,2)) #6
+hist(small_numeric$CorticalWhiteMatterVol, main='CorticalWhiteMatterVol')
+hist(small_numeric$Default_Mode_Global_Efficiency, main='Default_Mode_Global_Efficiency')
+hist(small_numeric$Dorsal_Attention_Global_Efficiency, main='Dorsal_Attention_Global_Efficiency')
+hist(small_numeric$Frontoparietal_Global_Efficiency, main='Frontoparietal_Global_Efficiency')
+hist(small_numeric$WM.hypointensities, main='WM.hypointensities')
+hist(small_numeric$Somatomotor_Global_Efficiency, main='Somatomotor_Global_Efficiency')
+
+par(mfrow = c(3,2)) #6
+hist(small_numeric$Limbic_Global_Efficiency, main='Limbic_Global_Efficiency')
+hist(small_numeric$Left.Accumbens.area, main='Left.Accumbens.area')
+hist(small_numeric$Left.Amygdala, main='Left.Amygdala')
+hist(small_numeric$Left.Caudate, main='Left.Caudate')
+hist(small_numeric$Left.Hippocampus, main='Left.Hippocampus')
+hist(small_numeric$Left.Pallidum, main='Left.Pallidum')
+
+par(mfrow = c(3,2)) #6
+hist(small_numeric$CortexVol, main='CortexVol')
+hist(small_numeric$Left.Putamen, main='Left.Putamen')
+hist(small_numeric$non.WM.hypointensities, main='non.WM.hypointensities') # scale
+hist(small_numeric$Right.Accumbens.area, main='Right.Accumbens.area')
+hist(small_numeric$Right.Amygdala, main='Right.Amygdala')
+hist(small_numeric$Right.Caudate, main='Right.Caudate')
+
+
+par(mfrow = c(3,2)) #9
+hist(small_numeric$Right.Hippocampus, main='Right.Hippocampus')
+hist(small_numeric$Right.Pallidum, main='Right.Pallidum')
+hist(small_numeric$Right.Putamen, main='Right.Putamen')
+hist(small_numeric$TotalGrayVol, main='TotalGrayVol')
+hist(small_numeric$Ventral_Attention_Global_Efficiency, main='Ventral_Attention_Global_Efficiency')
+hist(small_numeric$Visual_Global_Efficiency, main='Visual_Global_Efficiency')
+```
+
+## Check factor for small
+
+```{r}
+# Summarize factor and  variables
+summary(small_factor)
+
+
+## All Factors Scatterplots 
+small_factor$VWM_G <- small$VWM_G
+par(mfrow = c(3,2))
+plot(small_factor$zodiac, small_factor$VWM_G, xlab="zodiac", ylab="VWM_G", main="zodiac")
+plot(small_factor$OCCUPATION, small_factor$VWM_G, xlab="OCCUPATION", ylab="VWM_G", main="OCCUPATION")
+plot(small_factor$RESPONSJOB, small_factor$VWM_G, xlab="RESPONSJOB", ylab="VWM_G", main="RESPONSJOB")
+plot(small_factor$MOTHER_ETH_MAIN, small_factor$VWM_G, xlab="MOTHER_ETH_MAIN", ylab="VWM_G", main="MOTHER_ETH_MAIN")
+plot(small_factor$FATHER_ETH_MAIN, small_factor$VWM_G, xlab="FATHER_ETH_MAIN", ylab="VWM_G", main="FATHER_ETH_MAIN")
+
+small_factor$SWM_G <- small$SWM_G
+par(mfrow = c(3,2))
+plot(small_factor$zodiac, small_factor$SWM_G, xlab="zodiac", ylab="SWM_G", main="zodiac")
+plot(small_factor$OCCUPATION, small_factor$SWM_G, xlab="OCCUPATION", ylab="SWM_G", main="OCCUPATION")
+plot(small_factor$RESPONSJOB, small_factor$SWM_G, xlab="RESPONSJOB", ylab="SWM_G", main="RESPONSJOB")
+plot(small_factor$MOTHER_ETH_MAIN, small_factor$SWM_G, xlab="MOTHER_ETH_MAIN", ylab="SWM_G", main="MOTHER_ETH_MAIN")
+plot(small_factor$FATHER_ETH_MAIN, small_factor$SWM_G, xlab="FATHER_ETH_MAIN", ylab="SWM_G", main="FATHER_ETH_MAIN")
+
+```
+
+
+
+
+
+# Sort the data by PTID
+
+```{r}
+small <- small[order(small$PTID), ]
+row.names(small) <- NULL
+```
+
+
+
+# Accoring to correlation plot, we remove some variables that are highly correlated with others
+```{r}
+smaller_df = small
+smaller_df <- smaller_df[, !colnames(smaller_df) %in% c("TotalGrayVol","Frontoparietal_Global_Efficiency","Left.Accumbens.area",
+                                         "Left.Amygdala","Right.Caudate", "Right.Hippocampus","Right.Putamen")]
+# highly correlated
+```
+
+
+
+
+
+
+# Analysis
+
+## VWM_G
+
+(1) Jun Random forest
+
+```{r}
+set.seed(1000)
+library('tidyverse')
+library('tidymodels')
+
+final_dat <- subset(smaller_df,select=-c(PTID,SWM_G))
+
+final_dat -> final_pre
+final_pre %>%
+  initial_split(prop=0.7) -> final_split
+
+final_split %>% training() %>%
+  recipe(VWM_G~.) %>%
+  prep() -> final_recipe
+
+final_recipe %>%
+  bake(final_split %>% testing()) -> final_testing
+
+final_recipe %>%
+  juice() -> final_training
+
+rand_forest(trees=100, mode='regression') %>%
+  set_engine('randomForest') %>%
+  fit(VWM_G~., data=final_training) -> final_rf
+
+
+library(yardstick)
+final_rf %>%
+  predict(final_testing) %>%
+  bind_cols(final_testing) %>%
+  metrics(truth=VWM_G, estimate=.pred)
+
+final_pre %>%
+  recipe(VWM_G~.) %>%
+  prep() -> final_recipe2
+
+final_recipe2 %>%
+  bake(final_pre) -> final_testing_pre
+
+final_recipe2 %>%
+  juice() -> final_training_pre
+
+rand_forest(trees=100, mode='regression') %>%
+  set_engine('randomForest', localImp=TRUE) %>%
+  fit(VWM_G~., data=final_training_pre) -> final_rf2
+
+pp <- final_rf2 %>%
+  predict(final_testing_pre) %>%
+  bind_cols(final_pre)
+
+
+x <- pp$.pred
+y <- pp$VWM_G
+plot(x, y, main = "Predicted VWM_G VS Actual VWM_G",
+     xlab = "Predicted VWM_G", ylab = "Actual VWM_G",
+     pch = 19, frame = FALSE)
+abline(lm(y ~ x, data = pp), col = "blue")
+abline(a=0, b=1, col= "red")
+
+# install.packages('randomForestExplainer')
+library('randomForestExplainer')
+
+measure_importance(final_rf2$fit)
+
+library(dplyr)
+rank_imp <- measure_importance(final_rf2$fit) %>%
+  as_tibble() %>%
+  mutate(imp=node_purity_increase*100/max(node_purity_increase)) %>%
+  arrange(-imp)
+subset(rank_imp,select=c(variable, imp)) # Rank of important predictors
+
+
+mm <- measure_importance(final_rf2$fit)[,c(1,8)]
+subset_df <- mm[mm$p_value < 0.05, ]
+subset_df
+
+```
+# RMSE
+# 0.75305066
+# comment:
+# Majority of important variables are NOT MRI variables.
+
+
+(2) RF(Random Forest) by changmin
+
+```{r}
+library(caret)
+library(randomForest)
+
+set.seed(123)
+small_temp_VWM_G <- subset(smaller_df,select=-c(PTID,SWM_G))
+# library(caret)
+trainIndex <- createDataPartition(small_temp_VWM_G$VWM_G, p = 0.7,
+list = FALSE)
+
+train <- small_temp_VWM_G[trainIndex, ]
+test <- small_temp_VWM_G[-trainIndex, ]
+
+
+# Random Forest
+
+recommended.mtry <-floor(sqrt(ncol(train))) ## pre-specified m value
+## Fit a random forest.
+train.RF <- randomForest(VWM_G ~ ., data = train, mtry = recommended.mtry, 
+                         ntree = 500, importance = TRUE)
+varImpPlot(train.RF, type = 2, scale = F) # Gini
+
+# sqrt(mean((test$VWM_G - predict(train.RF, test))^2)) sqrt 해줘야하는거 아닌지?
+# mean((test$VWM_G - predict(train.RF, test)))
+
+# Compute evaluation metrics
+predictions <- predict(train.RF, test)
+rmse <- sqrt(mean((test$VWM_G - predictions)^2))
+# rsq <- cor(test$VWM_G, predictions)^2
+# mae <- mean(abs(test$VWM_G - predictions))
+
+
+# Print the evaluation metrics
+cat("rmse:", rmse, "\n")
+# cat("rsq:", rsq, "\n")
+# cat("mae:", mae, "\n")
+```
+# RMSE
+# 0.6935013
+# comment:
+# Majority of important variables are NOT MRI variables.
+
+
+
+
+# Now, SWM_G data
+
+(1) Jun Random forest
+
+```{r}
+set.seed(1000)
+library('tidyverse')
+library('tidymodels')
+
+final_dat <- subset(smaller_df,select=-c(PTID,VWM_G))
+
+final_dat -> final_pre
+final_pre %>%
+  initial_split(prop=0.7) -> final_split
+
+final_split %>% training() %>%
+  recipe(SWM_G~.) %>%
+  prep() -> final_recipe
+
+final_recipe %>%
+  bake(final_split %>% testing()) -> final_testing
+
+final_recipe %>%
+  juice() -> final_training
+
+rand_forest(trees=100, mode='regression') %>%
+  set_engine('randomForest') %>%
+  fit(SWM_G~., data=final_training) -> final_rf
+
+
+library(yardstick)
+final_rf %>%
+  predict(final_testing) %>%
+  bind_cols(final_testing) %>%
+  metrics(truth=SWM_G, estimate=.pred)
+
+final_pre %>%
+  recipe(SWM_G~.) %>%
+  prep() -> final_recipe2
+
+final_recipe2 %>%
+  bake(final_pre) -> final_testing_pre
+
+final_recipe2 %>%
+  juice() -> final_training_pre
+
+rand_forest(trees=100, mode='regression') %>%
+  set_engine('randomForest', localImp=TRUE) %>%
+  fit(SWM_G~., data=final_training_pre) -> final_rf2
+
+pp <- final_rf2 %>%
+  predict(final_testing_pre) %>%
+  bind_cols(final_pre)
+
+
+x <- pp$.pred
+y <- pp$SWM_G
+plot(x, y, main = "Predicted SWM_G VS Actual SWM_G",
+     xlab = "Predicted SWM_G", ylab = "Actual SWM_G",
+     pch = 19, frame = FALSE)
+abline(lm(y ~ x, data = pp), col = "blue")
+abline(a=0, b=1, col= "red")
+
+# install.packages('randomForestExplainer')
+library('randomForestExplainer')
+
+measure_importance(final_rf2$fit)
+
+library(dplyr)
+rank_imp <- measure_importance(final_rf2$fit) %>%
+  as_tibble() %>%
+  mutate(imp=node_purity_increase*100/max(node_purity_increase)) %>%
+  arrange(-imp)
+subset(rank_imp,select=c(variable, imp)) # Rank of important predictors
+
+
+mm <- measure_importance(final_rf2$fit)[,c(1,8)]
+subset_df <- mm[mm$p_value < 0.05, ]
+subset_df
+```
+# RMSE
+# 0.7239158
+# comment:
+# Majority of important variables are NOT MRI variables.
+
+
+
+(2) RF(Random Forest) by changmin
+
+
+```{r}
+library(caret)
+library(randomForest)
+
+set.seed(123)
+small_temp_SWM_G <- subset(smaller_df,select=-c(PTID,VWM_G))
+# library(caret)
+trainIndex <- createDataPartition(small_temp_SWM_G$SWM_G, p = 0.7,
+list = FALSE)
+
+train <- small_temp_SWM_G[trainIndex, ]
+test <- small_temp_SWM_G[-trainIndex, ]
+
+
+# Random Forest
+
+recommended.mtry <-floor(sqrt(ncol(train))) ## pre-specified m value
+## Fit a random forest.
+train.RF <- randomForest(SWM_G ~ ., data = train, mtry = recommended.mtry, 
+                         ntree = 500, importance = TRUE)
+varImpPlot(train.RF, type = 2, scale = F) # Gini
+
+
+# Compute evaluation metrics
+predictions <- predict(train.RF, test)
+rmse <- sqrt(mean((test$SWM_G - predictions)^2))
+# rsq <- cor(test$SWM_G, predictions)^2
+# mae <- mean(abs(test$SWM_G - predictions))
+
+
+# Print the evaluation metrics
+cat("rmse:", rmse, "\n")
+# cat("rsq:", rsq, "\n")
+# cat("mae:", mae, "\n")
+```
+# RMSE
+# 0.6447348
+# comment:
+# Majority of important variables are NOT MRI variables.
+

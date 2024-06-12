@@ -1,0 +1,229 @@
+---
+title: "Anderson_2_MRI_only"
+author: "euijun kim"
+date: "2023-03-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+library(tidyverse)
+library(tidymodels)
+library(lubridate)
+library(glmnet)
+library(xgboost)
+library(reshape2)
+library(ranger)
+library(ggplot2)
+library(car)
+library(readxl)
+library(dplyr)
+library(caret)
+library(psych)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+getwd()
+CNP_df <- read_excel("CNP.xlsx")
+CNP_df = as.data.frame(CNP_df)
+```
+
+# Merge
+
+```{r}
+smaller_df_temp <- CNP_df
+
+
+smaller_df <-
+  subset(
+    smaller_df_temp,
+    select = c(
+      VWM_G,
+      SWM_G,
+      Visual_Global_Efficiency,
+      Somatomotor_Global_Efficiency,
+      Dorsal_Attention_Global_Efficiency,
+      Ventral_Attention_Global_Efficiency,
+      Limbic_Global_Efficiency,
+      Frontoparietal_Global_Efficiency,
+      Default_Mode_Global_Efficiency,
+      Left.Amygdala,
+      Right.Amygdala,
+      Left.Caudate,
+      Right.Caudate,
+      Left.Accumbens.area,
+      Right.Accumbens.area,
+      TotalGrayVol,
+      CortexVol,
+      CorticalWhiteMatterVol,
+      Left.Putamen,
+      Right.Putamen,
+      Left.Pallidum,
+      Right.Pallidum,
+      Left.Hippocampus,
+      Right.Hippocampus,
+      WM.hypointensities,
+      non.WM.hypointensities
+    )
+  )
+
+sum(is.na(smaller_df))
+```
+
+
+```{r}
+cor_df <- cor(smaller_df)
+df <- data.frame(var1 = rep(colnames(cor_df), each = ncol(cor_df)), var2 = rep(colnames(cor_df), ncol(cor_df)), corr = c(cor_df))
+ggplot(data = subset(df, abs(corr) >= 0.7), aes(x = var1, y = var2, fill = corr)) + 
+  geom_tile() + 
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, limits = c(-1,1)) + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, size = 10, hjust = 1))
+
+#1 Win - Left.Putamen  -Left.Putamen and Right.Putamen
+#2 Win - CortexVol - TotalGrayVol and CoretexVol
+#3 Win - Default_Mode_Global_Efficiency  -Frontoparietal_Global_Efficiency and Default_Mode_Global_Efficiency 
+#4 Win - Ventral_Attention_Global_Efficiency   -Frontoparietal_Global_Efficiency and Ventral_Attention_Global_Efficiency
+#5 Win - Right.Accumbens.area  -Left.Accumbens.area and Right.Accumbens.area
+#6 Win - Right.Amygdala  -Left.Amygdala and Right.Amygdala
+#7 Win - Left.Caudate  -Left.Caudate and Right.Caudate
+#8 Win - Left.Hippocampus  -Left.Hippocampus and Right.Hippocampus
+
+smaller_df <- smaller_df[, !colnames(smaller_df) %in% c("TotalGrayVol","Frontoparietal_Global_Efficiency","Left.Accumbens.area",
+                                         "Left.Amygdala","Right.Caudate", "Right.Hippocampus","Right.Putamen")]
+# highly correlated
+
+cor_df <- cor(smaller_df)
+df <- data.frame(var1 = rep(colnames(cor_df), each = ncol(cor_df)), var2 = rep(colnames(cor_df), ncol(cor_df)), corr = c(cor_df))
+ggplot(data = subset(df, abs(corr) >= 0.7), aes(x = var1, y = var2, fill = corr)) + 
+  geom_tile() + 
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, limits = c(-1,1)) + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, size = 10, hjust = 1))
+```
+
+# Final MRI data
+
+```{r}
+View(smaller_df)
+```
+
+# Predict V
+
+```{r}
+smaller.VWM <- smaller_df[, -2]
+```
+
+```{r}
+library(caret)
+library(randomForest)
+
+set.seed(123)
+# library(caret)
+trainIndex <- createDataPartition(smaller.VWM$VWM_G, p = 0.7,
+list = FALSE)
+
+train <- smaller.VWM[trainIndex, ]
+test <- smaller.VWM[-trainIndex, ]
+
+
+# Random Forest
+
+recommended.mtry <-floor(sqrt(ncol(train))) ## pre-specified m value
+## Fit a random forest.
+train.RF <- randomForest(VWM_G ~ ., data = train, mtry = recommended.mtry, 
+                         ntree = 500, importance = TRUE)
+varImpPlot(train.RF, type = 2, scale = F) # Gini
+
+# sqrt(mean((test$VWM_G - predict(train.RF, test))^2)) sqrt 해줘야하는거 아닌지?
+# mean((test$VWM_G - predict(train.RF, test)))
+
+# Compute evaluation metrics
+predictions <- predict(train.RF, test)
+rmse <- sqrt(mean((test$VWM_G - predictions)^2))
+# rsq <- cor(test$VWM_G, predictions)^2
+# mae <- mean(abs(test$VWM_G - predictions))
+
+
+# Print the evaluation metrics
+cat("rmse:", rmse, "\n")
+# cat("rsq:", rsq, "\n")
+# cat("mae:", mae, "\n")
+```
+
+```{r}
+library(class)
+
+kfold <- function(x, folds = 5, K = 1) {
+  set_index <- rep(1:folds, nrow(x))
+  set_index <- set_index[sample(nrow(x))]
+  # First, we set k sets to divide the dataset.
+  # And sample this index for randomness.
+  
+  mse <- numeric(0)
+  
+  for (i in seq_len(folds)) {
+    testing_set <- which(set_index == i)
+    testing <- x[testing_set, ]
+    training <- x[-testing_set, ] 
+    # only ith dataset goes to the training set.
+    
+    knn.model <- knn(training[, -1], testing[, -1], training$VWM_G, k = K)
+    # Set a model using the training set.
+    mse[i] <- mean((testing$VWM_G - as.numeric(as.character(knn.model)))^2)
+    # Calculate MSE.
+  }
+  
+  sqrt(mean(mse)) # RMSE
+}
+
+set.seed(123)
+
+kfold(smaller.VWM, folds = 5, K = 3)
+kfold(smaller.VWM, folds = 5, K = 5)
+kfold(smaller.VWM, folds = 5, K = 7)
+kfold(smaller.VWM, folds = 5, K = 9)
+kfold(smaller.VWM, folds = 5, K = 11)
+```
+
+We'll choose $K = 5$ since it produces the smallest RMSE. Although the RMSE value is higher than when $K = 9$ and $K = 11$, we'll go for $K = 5$ since if we keep increasing the value of $K$, the variance keeps decrease with bias-variance tradeoff. So, it might be dangerous if we just increase $K$ to get the lowest RMSE.
+
+```{r}
+set.seed(123)
+knn.VWM <- knn(train[, -1], test[, -1], train[, 1],
+                k = 9)
+
+mse.knn <- mean((test$VWM_G - as.numeric(as.character(knn.VWM)))^2)
+sqrt(mse.knn)
+```
+
+```{r}
+predictions <- as.numeric(as.character(knn.VWM))
+
+rmse <- sqrt(mean((test$VWM_G - predictions)^2))
+rsq <- cor(test$VWM_G, predictions)^2
+mae <- mean(abs(test$VWM_G - predictions))
+
+
+# Print the evaluation metrics
+cat("rmse:", rmse, "\n")
+cat("rsq:", rsq, "\n")
+cat("mae:", mae, "\n")
+```
+
+In general, KNN tends to perform better on numerical data, particularly when the features have similar scales. This is because the distance metric used in KNN is typically Euclidean distance, which is most meaningful for numeric values.
+
+
+
+```{r}
+model <- lm(VWM_G ~ ., data = train)
+summary(model)
+```
+
+```{r}
+sqrt(mean((test$VWM_G - predict(model, test))^2))
+```
+

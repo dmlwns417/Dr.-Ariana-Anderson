@@ -1,0 +1,178 @@
+---
+title: "141xp_data_is_ready"
+author: "euijun kim"
+date: "2023-03-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+library(tidyverse)
+library(tidymodels)
+library(lubridate)
+library(glmnet)
+library(xgboost)
+library(ranger)
+library(reshape2)
+library(ranger)
+library(ggplot2)
+library(car)
+library(readxl)
+library(dplyr)
+library(caret)
+library(psych)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Read data
+
+```{r}
+getwd()
+small <- read.csv("smaller.csv")
+large <- read.csv("larger.csv")
+
+
+# Convert all character columns to factor columns as we read the csv file and factor changed to chr.
+small[] <- lapply(small, function(x) if(is.character(x)) as.factor(x) else x)
+large[] <- lapply(large, function(x) if(is.character(x)) as.factor(x) else x)
+
+factor_cols <-
+  c(
+    "BIRTH_LOC",
+    "LANGUAGE1",
+    "RACE_MAIN",
+    "MOTHER_ETH_MAIN",
+    "FATHER_ETH_MAIN",
+    "RELIGION",
+    "CIVIL_STAT",
+    "SEXUALITY",
+    "OCCUPATION",
+    "RESPONSJOB",
+    "SCHOOL_DEGREE",
+    "SCHOOL_MOTHER_DEGREE",
+    "CIGS",
+    "RESIDENCE"
+  )
+
+factor_cols2 <- c(factor_cols,"SCHOOL_FATHER_DEGREE")
+
+for (col in factor_cols) {
+  small[[col]] <- as.factor(small[[col]])
+}
+
+for (col in factor_cols2) {
+  large[[col]] <- as.factor(large[[col]])
+}
+```
+
+
+
+
+
+# Smaller data with Zodiac
+```{r}
+# Define a function to convert a year to a Chinese zodiac sign
+year_to_zodiac <- function(year) {
+  # Define the start year for the Chinese zodiac cycle (1900 is the year of the Rat)
+  start_year <- 1900
+  
+  # Define the names of the zodiac animals
+  animal_names <- c("Rat", "Ox", "Tiger", "Rabbit", "Dragon", "Snake", "Horse", "Sheep", "Monkey", "Rooster", "Dog", "Pig")
+  
+  # Calculate the index of the zodiac animal based on the year
+  animal_index <- (year - start_year) %% 12
+  
+  # Return the name of the corresponding zodiac animal
+  return(animal_names[animal_index + 1])
+}
+
+
+# Use the "year" column directly to get the corresponding Chinese zodiac sign
+small$zodiac <- year_to_zodiac(small$YEAR)
+small[,c("YEAR","zodiac")]
+
+
+# Print the resulting data frame SWM_G
+# VWM_G- verbal working memory	SWM_G- spatial working memory
+
+
+ggplot(small, aes(x = zodiac, y = VWM_G)) +
+  geom_boxplot() +
+  labs(x = "Chinese Zodiac", y = "Verbal Working Memory", title = "Verbal Working Memory by Chinese Zodiac Sign")
+
+ggplot(small, aes(x = zodiac, y = VWM_G)) +
+  stat_summary(fun.y = mean, geom = "bar") +
+  labs(x = "Chinese Zodiac", y = "Verbal Working Memory", title = "Verbal Working Memory by Chinese Zodiac Sign")
+
+ggplot(small, aes(x = zodiac, y = SWM_G)) +
+  geom_boxplot() +
+  labs(x = "Chinese Zodiac", y = "Spatial Working Memory", title = "Spatial  Working Memory by Chinese Zodiac Sign")
+
+ggplot(small, aes(x = zodiac, y = SWM_G)) +
+  stat_summary(fun.y = mean, geom = "bar") +
+  labs(x = "Chinese Zodiac", y = "Spatial Working Memory", title = "Spatial  Working Memory by Chinese Zodiac Sign")
+
+```
+
+# Larger data with Zodiac
+```{r}
+# Use the "year" column directly to get the corresponding Chinese zodiac sign
+large$zodiac <- year_to_zodiac(large$YEAR)
+large[,c("YEAR","zodiac")]
+
+
+# Print the resulting data frame SWM_G
+# VWM_G- verbal working memory	SWM_G- spatial working memory
+
+
+ggplot(large, aes(x = zodiac, y = VWM_G)) +
+  geom_boxplot() +
+  labs(x = "Chinese Zodiac", y = "Verbal Working Memory", title = "Verbal Working Memory by Chinese Zodiac Sign")
+
+ggplot(large, aes(x = zodiac, y = VWM_G)) +
+  stat_summary(fun.y = mean, geom = "bar") +
+  labs(x = "Chinese Zodiac", y = "Verbal Working Memory", title = "Verbal Working Memory by Chinese Zodiac Sign")
+
+ggplot(large, aes(x = zodiac, y = SWM_G)) +
+  geom_boxplot() +
+  labs(x = "Chinese Zodiac", y = "Spatial Working Memory", title = "Spatial  Working Memory by Chinese Zodiac Sign")
+
+ggplot(large, aes(x = zodiac, y = SWM_G)) +
+  stat_summary(fun.y = mean, geom = "bar") +
+  labs(x = "Chinese Zodiac", y = "Spatial Working Memory", title = "Spatial  Working Memory by Chinese Zodiac Sign")
+
+```
+
+
+
+# Data selection
+# Stepwise
+
+```{r}
+# small
+# which(colnames(small) == "SEXUALITY_OPT") 
+# 1,34,63,64, PTID, year, response
+VWM_G_small <- small[,-c(1,34,51,63)]
+SWM_G_small <- small[,-c(1,34,51,62)]
+VWM_G_small$zodiac <- factor(VWM_G_small$zodiac)
+SWM_G_small$zodiac <- factor(SWM_G_small$zodiac)
+
+# # #foward
+# fit <- lm(VWM_G ~ ., data = VWM_G_small)  # Start with full model
+# # str(fit)
+# fit_fwd <- stats::step(fit, direction = "forward")
+# summary(fit_fwd)
+# 
+# # #backward
+# fit_bwd <- stats::step(fit, direction = "backward")
+# summary(fit_fwd)
+# 
+# str(VWM_G_small)
+# class(fit)
+# summary(fit)
+
+```
+
+
+
+

@@ -1,0 +1,962 @@
+---
+title: "141xp_EDA_Large_data_analysis"
+author: "euijun kim"
+date: "2023-03-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+library(tidyverse)
+library(tidymodels)
+library(lubridate)
+library(glmnet)
+library(xgboost)
+library(reshape2)
+library(ranger)
+library(ggplot2)
+library(car)
+library(readxl)
+library(dplyr)
+library(caret)
+library(psych)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Read data
+
+```{r}
+getwd()
+small <- read.csv("smaller.csv")
+large <- read.csv("larger.csv")
+
+# Convert all character columns to factor columns as we read the csv file and factor changed to chr.
+small[] <- lapply(small, function(x) if(is.character(x)) as.factor(x) else x)
+large[] <- lapply(large, function(x) if(is.character(x)) as.factor(x) else x)
+
+factor_cols <-
+  c(
+    "BIRTH_LOC",
+    "LANGUAGE1",
+    "RACE_MAIN",
+    "MOTHER_ETH_MAIN",
+    "FATHER_ETH_MAIN",
+    "RELIGION",
+    "CIVIL_STAT",
+    "SEXUALITY",
+    "OCCUPATION",
+    "RESPONSJOB",
+    "SCHOOL_DEGREE",
+    "SCHOOL_MOTHER_DEGREE",
+    "CIGS",
+    "RESIDENCE"
+  )
+
+factor_cols2 <- c(factor_cols,"SCHOOL_FATHER_DEGREE")
+
+for (col in factor_cols) {
+  small[[col]] <- as.factor(small[[col]])
+}
+
+for (col in factor_cols2) {
+  large[[col]] <- as.factor(large[[col]])
+}
+
+# SEXUALITY_OPT only has one factor, meaning useless variable.
+small <- subset(small, select = -SEXUALITY_OPT)
+large <- subset(large, select = -SEXUALITY_OPT)
+```
+
+
+
+
+# EDA Starts
+
+## Smaller data with Zodiac
+```{r}
+# Define a function to convert a year to a Chinese zodiac sign
+year_to_zodiac <- function(year) {
+  # Define the start year for the Chinese zodiac cycle (1900 is the year of the Rat)
+  start_year <- 1900
+  
+  # Define the names of the zodiac animals
+  animal_names <- c("Rat", "Ox", "Tiger", "Rabbit", "Dragon", "Snake", "Horse", "Sheep", "Monkey", "Rooster", "Dog", "Pig")
+  
+  # Calculate the index of the zodiac animal based on the year
+  animal_index <- (year - start_year) %% 12
+  
+  # Return the name of the corresponding zodiac animal
+  return(animal_names[animal_index + 1])
+}
+
+
+# Use the "year" column directly to get the corresponding Chinese zodiac sign
+small$zodiac <- year_to_zodiac(small$YEAR)
+
+
+# Print the resulting data frame SWM_G
+# VWM_G- verbal working memory	SWM_G- spatial working memory
+
+
+# ggplot(small, aes(x = zodiac, y = VWM_G)) +
+#   geom_boxplot() +
+#   labs(x = "Chinese Zodiac", y = "Verbal Working Memory", title = "Verbal Working Memory by Chinese Zodiac Sign")
+# 
+# ggplot(small, aes(x = zodiac, y = VWM_G)) +
+#   stat_summary(fun.y = mean, geom = "bar") +
+#   labs(x = "Chinese Zodiac", y = "Verbal Working Memory", title = "Verbal Working Memory by Chinese Zodiac Sign")
+# 
+# ggplot(small, aes(x = zodiac, y = SWM_G)) +
+#   geom_boxplot() +
+#   labs(x = "Chinese Zodiac", y = "Spatial Working Memory", title = "Spatial  Working Memory by Chinese Zodiac Sign")
+# 
+# ggplot(small, aes(x = zodiac, y = SWM_G)) +
+#   stat_summary(fun.y = mean, geom = "bar") +
+#   labs(x = "Chinese Zodiac", y = "Spatial Working Memory", title = "Spatial  Working Memory by Chinese Zodiac Sign")
+
+```
+
+## Larger data with Zodiac
+```{r}
+# Use the "year" column directly to get the corresponding Chinese zodiac sign
+large$zodiac <- year_to_zodiac(large$YEAR)
+
+
+# Print the resulting data frame SWM_G
+# VWM_G- verbal working memory	SWM_G- spatial working memory
+
+
+# ggplot(large, aes(x = zodiac, y = VWM_G)) +
+#   geom_boxplot() +
+#   labs(x = "Chinese Zodiac", y = "Verbal Working Memory", title = "Verbal Working Memory by Chinese Zodiac Sign")
+# 
+# ggplot(large, aes(x = zodiac, y = VWM_G)) +
+#   stat_summary(fun.y = mean, geom = "bar") +
+#   labs(x = "Chinese Zodiac", y = "Verbal Working Memory", title = "Verbal Working Memory by Chinese Zodiac Sign")
+# 
+# ggplot(large, aes(x = zodiac, y = SWM_G)) +
+#   geom_boxplot() +
+#   labs(x = "Chinese Zodiac", y = "Spatial Working Memory", title = "Spatial  Working Memory by Chinese Zodiac Sign")
+# 
+# ggplot(large, aes(x = zodiac, y = SWM_G)) +
+#   stat_summary(fun.y = mean, geom = "bar") +
+#   labs(x = "Chinese Zodiac", y = "Spatial Working Memory", title = "Spatial  Working Memory by Chinese Zodiac Sign")
+
+small$zodiac <- factor(small$zodiac)
+large$zodiac <- factor(large$zodiac)
+
+```
+
+
+
+
+
+
+
+
+
+## EDA for small data
+
+```{r}
+library(dplyr)
+# install.packages("GGally")
+source("https://raw.githubusercontent.com/briatte/ggcorr/master/ggcorr.R")
+library(ggplot2)
+
+
+## 0. get information about each variable of dataset
+# 193 observations and 64 variables 
+describe(small)
+str(small)
+ncol(small)
+nrow(small)
+
+## 1. Understand the dataset structure
+#total 64(numeric - 42, factor - 21)
+str(small)
+
+## 1.1 Response Variable Histogram
+ggplot(data = small) +
+  geom_histogram(mapping = aes(x = VWM_G), binwidth = 0.5)
+# most of VWM_G values are near around 0
+ggplot(data = small) +
+  geom_histogram(mapping = aes(x = SWM_G), binwidth = 0.5)
+# most of SWM_G values are near around 0.5 
+
+## 2. Check for missing values
+sum(is.na(small))
+
+## 3. Summarize numerical and factor variables
+small_numeric <- small[sapply(small, is.numeric)]
+small_factor <- small[sapply(small, is.factor)]
+# summary(small_numeric)
+# summary(small_factor)
+```
+
+
+## Check correlation for small
+
+```{r}
+## 4. Correation between numeric variables and find cor more than 0.5 or less than -0.5
+# We found there could be problem multicollinearity
+cor_df <- cor(small_numeric)
+# summary(cor_df)
+df <- data.frame(var1 = rep(colnames(cor_df), each = ncol(cor_df)), var2 = rep(colnames(cor_df), ncol(cor_df)), corr = c(cor_df))
+ggplot(data = subset(df, abs(corr) >= 0.7), aes(x = var1, y = var2, fill = corr)) + 
+  geom_tile() + 
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, limits = c(-1,1)) + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, size = 10, hjust = 1))
+```
+
+
+## Check numeric for small
+
+```{r}
+
+# colnames(small_numeric)
+par(mfrow = c(3,2))#6
+hist(small_numeric$AGE, main='AGE')
+hist(small_numeric$CHAPPER_TOTAL, main='CHAPPER_TOTAL')
+hist(small_numeric$CHAPPHY_TOTAL, main='CHAPPHY_TOTAL')
+hist(small_numeric$CHAPSOC_TOTAL, main='CHAPSOC_TOTAL')
+hist(small_numeric$SCHOOL_MOTHER_YRS, main='SCHOOL_MOTHER_YRS')
+hist(small_numeric$SCHOOL_FATHER_YRS, main='SCHOOL_FATHER_YRS')
+
+# CHAPPER_TOTAL can be removed
+
+par(mfrow = c(3,2)) #6
+hist(small_numeric$CorticalWhiteMatterVol, main='CorticalWhiteMatterVol')
+hist(small_numeric$Default_Mode_Global_Efficiency, main='Default_Mode_Global_Efficiency')
+hist(small_numeric$Dorsal_Attention_Global_Efficiency, main='Dorsal_Attention_Global_Efficiency')
+hist(small_numeric$Frontoparietal_Global_Efficiency, main='Frontoparietal_Global_Efficiency')
+hist(small_numeric$WM.hypointensities, main='WM.hypointensities')
+hist(small_numeric$Somatomotor_Global_Efficiency, main='Somatomotor_Global_Efficiency')
+
+par(mfrow = c(3,2)) #6
+hist(small_numeric$Limbic_Global_Efficiency, main='Limbic_Global_Efficiency')
+hist(small_numeric$Left.Accumbens.area, main='Left.Accumbens.area')
+hist(small_numeric$Left.Amygdala, main='Left.Amygdala')
+hist(small_numeric$Left.Caudate, main='Left.Caudate')
+hist(small_numeric$Left.Hippocampus, main='Left.Hippocampus')
+hist(small_numeric$Left.Pallidum, main='Left.Pallidum')
+
+par(mfrow = c(3,2)) #6
+hist(small_numeric$CortexVol, main='CortexVol')
+hist(small_numeric$Left.Putamen, main='Left.Putamen')
+hist(small_numeric$non.WM.hypointensities, main='non.WM.hypointensities') # scale
+hist(small_numeric$Right.Accumbens.area, main='Right.Accumbens.area')
+hist(small_numeric$Right.Amygdala, main='Right.Amygdala')
+hist(small_numeric$Right.Caudate, main='Right.Caudate')
+
+
+par(mfrow = c(3,3)) #9
+hist(small_numeric$Right.Hippocampus, main='Right.Hippocampus')
+hist(small_numeric$Right.Pallidum, main='Right.Pallidum')
+hist(small_numeric$Right.Putamen, main='Right.Putamen')
+hist(small_numeric$TotalGrayVol, main='TotalGrayVol')
+hist(small_numeric$Ventral_Attention_Global_Efficiency, main='Ventral_Attention_Global_Efficiency')
+hist(small_numeric$Visual_Global_Efficiency, main='Visual_Global_Efficiency')
+hist(small_numeric$WM.hypointensities, main='WM.hypointensities')
+hist(small_numeric$HT_FT, main='HT_FT')
+hist(small_numeric$HT_IN, main='HT_IN')
+# HT_FT can be removed
+
+
+par(mfrow = c(3,3)) #9
+hist(small_numeric$BMI, main='BMI')
+hist(small_numeric$LA2KHEALTH_SCORE, main='LA2KHEALTH_SCORE') #scale
+hist(small_numeric$CHILDREN_NUM, main='CHILDREN_NUM')
+# table(small_numeric$CHILDREN_NUM)
+hist(small_numeric$SCHOOL_YRS, main='SCHOOL_YRS')
+hist(small_numeric$HT, main='HT')
+hist(small_numeric$WT, main='WT')
+hist(small_numeric$HOPKINS_AVG, main='HOPKINS_AVG') #scale
+hist(small_numeric$VWM_G, main='VWM_G')
+hist(small_numeric$SWM_G, main='SWM_G')
+# CHILDREN_NUM can be removed
+```
+
+## Check factor for small
+
+```{r}
+
+# 6. Summarize factor and character variables
+summary(small_factor)
+# proportion for some variable is bad. We can remove those variables.
+# ADOPT
+# BIRTH_LOC
+# LANGUAGE1
+# RACE_MAIN
+# CIVIL_STAT
+# MILITARY
+# SCHOOL_BACK
+# SEXUALITY
+# CIGS
+
+
+## 7. All Factors Scatterplots 
+small_factor$VWM_G <- small$VWM_G
+par(mfrow = c(3,3))
+plot(small_factor$GENDER, small_factor$VWM_G, xlab="GENDER", ylab="VWM_G", main="GENDER")
+plot(small_factor$ETHNICITY, small_factor$VWM_G, xlab="ETHNICITY", ylab="VWM_G", main="ETHNICITY")
+plot(small_factor$DX, small_factor$VWM_G, xlab="DX", ylab="VWM_G", main="DX")
+plot(small_factor$MOTHER_ETH_MAIN, small_factor$VWM_G, xlab="MOTHER_ETH_MAIN", ylab="VWM_G", main="MOTHER_ETH_MAIN")
+plot(small_factor$FATHER_ETH_MAIN, small_factor$VWM_G, xlab="FATHER_ETH_MAIN", ylab="VWM_G", main="FATHER_ETH_MAIN")
+plot(small_factor$RELIGION, small_factor$VWM_G, xlab="RELIGION", ylab="VWM_G", main="RELIGION")
+
+par(mfrow = c(3,3))
+plot(small_factor$RESIDENCE, small_factor$VWM_G, xlab="RESIDENCE", ylab="VWM_G", main="RESIDENCE")
+plot(small_factor$OCCUPATION, small_factor$VWM_G, xlab="OCCUPATION", ylab="VWM_G", main="OCCUPATION")
+plot(small_factor$RESPONSJOB, small_factor$VWM_G, xlab="RESPONSJOB", ylab="VWM_G", main="RESPONSJOB")
+plot(small_factor$SCHOOL_DEGREE, small_factor$VWM_G, xlab="SCHOOL_DEGREE", ylab="VWM_G", main="SCHOOL_DEGREE")
+plot(small_factor$SCHOOL_MOTHER_DEGREE, small_factor$VWM_G, xlab="SCHOOL_MOTHER_DEGREE", ylab="VWM_G", main="SCHOOL_MOTHER_DEGREE")
+
+```
+
+
+
+
+
+
+
+
+
+
+
+## EDA for large data
+
+```{r}
+## 0. get information about each variable of dataset
+# 193 observations and 64 variables 
+describe(large)
+dim(large)
+
+## 1. Understand the dataset structure
+#total 64(numeric - 42, factor - 21)
+str(large)
+
+## 1.1 Response Variable Histogram
+ggplot(data = large) +
+  geom_histogram(mapping = aes(x = VWM_G), binwidth = 0.5)
+# most of VWM_G values are near around 0
+ggplot(data = large) +
+  geom_histogram(mapping = aes(x = SWM_G), binwidth = 0.5)
+# most of SWM_G values are near around 0.5 
+
+## 2. Check for missing values
+sum(is.na(large))
+
+## 3. Summarize numerical and factor variables
+large_numeric <- large[sapply(large, is.numeric)]
+large_factor <- large[sapply(large, is.factor)]
+# summary(large_numeric)
+# summary(large_factor)
+```
+
+
+## Correlation for large
+
+```{r}
+cor_df <- cor(large_numeric)
+# summary(cor_df)
+df <- data.frame(var1 = rep(colnames(cor_df), each = ncol(cor_df)), var2 = rep(colnames(cor_df), ncol(cor_df)), corr = c(cor_df))
+ggplot(data = subset(df, abs(corr) >= 0.7), aes(x = var1, y = var2, fill = corr)) + 
+  geom_tile() + 
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, limits = c(-1,1)) + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, size = 10, hjust = 1))
+```
+
+
+## Check numeric for large
+
+```{r}
+# large
+# colnames(large_numeric)
+par(mfrow = c(2,2))#4
+hist(large_numeric$AGE, main='AGE')
+hist(large_numeric$CHAPPER_TOTAL, main='CHAPPER_TOTAL')
+hist(large_numeric$CHAPPHY_TOTAL, main='CHAPPHY_TOTAL')
+hist(large_numeric$CHAPSOC_TOTAL, main='CHAPSOC_TOTAL')
+# CHAPPER_TOTAL can be removed
+
+
+par(mfrow = c(3,2)) #6
+hist(large_numeric$LA2KHEALTH_SCORE, main='LA2KHEALTH_SCORE') #scale
+hist(large_numeric$CHILDREN_NUM, main='CHILDREN_NUM')
+hist(large_numeric$SCHOOL_YRS, main='SCHOOL_YRS')
+hist(large_numeric$HOPKINS_AVG, main='HOPKINS_AVG') #scale
+hist(large_numeric$SCHOOL_MOTHER_YRS, main='SCHOOL_MOTHER_YRS')
+hist(large_numeric$SCHOOL_FATHER_YRS, main='SCHOOL_FATHER_YRS')
+# children can be removed
+```
+
+## check factor for large
+
+```{r}
+
+summary(large_factor)
+# ADOPT
+# BIRTH_LOC
+# LANGUAGE1
+# RACE_MAIN
+# CIVIL_STAT
+# MILITARY
+# SCHOOL_BACK
+# SEXUALITY
+# CIGS
+
+
+colnames(large_factor)
+## 7. All Factors Scatterplots 
+large_factor$VWM_G <- large_factor$VWM_G
+par(mfrow = c(3,3)) #5
+plot(large_factor$GENDER, large_factor$VWM_G, xlab="GENDER", ylab="VWM_G", main="GENDER")
+plot(large_factor$ETHNICITY, large_factor$VWM_G, xlab="ETHNICITY", ylab="VWM_G", main="ETHNICITY")
+plot(large_factor$MOTHER_ETH_MAIN, large_factor$VWM_G, xlab="MOTHER_ETH_MAIN", ylab="VWM_G", main="MOTHER_ETH_MAIN")
+plot(large_factor$FATHER_ETH_MAIN, large_factor$VWM_G, xlab="FATHER_ETH_MAIN", ylab="VWM_G", main="FATHER_ETH_MAIN")
+plot(large_factor$RELIGION, large_factor$VWM_G, xlab="RELIGION", ylab="VWM_G", main="RELIGION")
+
+
+par(mfrow = c(3,3)) #6
+plot(large_factor$RESIDENCE, large_factor$VWM_G, xlab="RESIDENCE", ylab="VWM_G", main="RESIDENCE")
+plot(large_factor$OCCUPATION, large_factor$VWM_G, xlab="OCCUPATION", ylab="VWM_G", main="OCCUPATION")
+plot(large_factor$RESPONSJOB, large_factor$VWM_G, xlab="RESPONSJOB", ylab="VWM_G", main="RESPONSJOB")
+plot(large_factor$SCHOOL_DEGREE, large_factor$VWM_G, xlab="SCHOOL_DEGREE", ylab="VWM_G", main="SCHOOL_DEGREE")
+plot(large_factor$SCHOOL_MOTHER_DEGREE, large_factor$VWM_G, xlab="SCHOOL_MOTHER_DEGREE", ylab="VWM_G", main="SCHOOL_MOTHER_DEGREE")
+plot(large_factor$SCHOOL_FATHER_DEGREE, large_factor$VWM_G, xlab="SCHOOL_FATHER_DEGREE", ylab="VWM_G", main="SCHOOL_FATHER_DEGREE")
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+## According to EDA, we can remove some meaningless variables.
+
+# For small
+```{r}
+small <- small[, !colnames(small) %in% c("ADOPT","BIRTH_LOC","LANGUAGE1","RACE_MAIN","CIVIL_STAT","MILITARY",
+                                         "SCHOOL_BACK","SEXUALITY","CIGS")]
+# proportion is too bad. ex) Military (Yes = 95%, No = 5%) -> this is no longer useful
+
+small <- small[, !colnames(small) %in% c("HT_FT","CHILDREN_NUM","CHAPPER_TOTAL")] # skewd too much
+
+
+
+# Find pairs of variables that have high correlation with each other. And drop the one that is less correlated with both reponse variable.
+
+
+#1 Win - BMI - WT and BMI -----> BMI is more correlated with response variable. So, we drop WT.
+#2 Win - CortexVol - TotalGrayVol and CoretexVol
+#3 Win - Default_Mode_Global_Efficiency  -Frontoparietal_Global_Efficiency and Default_Mode_Global_Efficiency 
+#4 Win - Ventral_Attention_Global_Efficiency   -Frontoparietal_Global_Efficiency and Ventral_Attention_Global_Efficiency
+#5 Win - Right.Accumbens.area  -Left.Accumbens.area and Right.Accumbens.area
+#6 Win - Right.Amygdala  -Left.Amygdala and Right.Amygdala
+#7 Win - Left.Caudate  -Left.Caudate and Right.Caudate
+#8 Win - Left.Hippocampus  -Left.Hippocampus and Right.Hippocampus
+#9 Win - Left.Putamen  -Left.Putamen and Right.Putamen
+
+
+# aa <- subset(small_numeric, select = c(WT, BMI, TotalGrayVol,CortexVol, Frontoparietal_Global_Efficiency, Default_Mode_Global_Efficiency,
+#                                        Ventral_Attention_Global_Efficiency, 
+#                                        Left.Accumbens.area, Right.Accumbens.area
+#                                       ,Left.Amygdala, Right.Amygdala
+#                                       ,Left.Caudate, Right.Caudate
+#                                       ,Left.Hippocampus, Right.Hippocampus
+#                                       ,Left.Putamen, Right.Putamen ,VWM_G,SWM_G))
+
+small <- small[, !colnames(small) %in% c("WT","TotalGrayVol","Frontoparietal_Global_Efficiency","Left.Accumbens.area",
+                                         "Left.Amygdala","Right.Caudate", "Right.Hippocampus","Right.Putamen")] # highly correlated
+
+small_numeric <- small[sapply(small, is.numeric)]
+small_factor <- small[sapply(small, is.factor)]
+# str(small_factor)
+# str(small_numeric)
+# str(small)
+```
+
+## For large
+```{r}
+
+large <- large[, !colnames(large) %in% c("ADOPT","BIRTH_LOC","LANGUAGE1","RACE_MAIN","CIVIL_STAT","MILITARY",
+                                         "SCHOOL_BACK","SEXUALITY","CIGS")]
+# proportion is too bad. ex) Military (Yes = 95%, No = 5%) -> this is no longer useful
+
+large <- large[, !colnames(large) %in% c("CHILDREN_NUM","CHAPPER_TOTAL")] # skewd too much
+
+#Note: large data's numeric variables are not correlated at all.
+
+
+large_numeric <- large[sapply(large, is.numeric)]
+large_factor <- large[sapply(large, is.factor)]
+# str(large_factor)
+# str(large_numeric)
+# str(large)
+```
+
+
+
+
+
+# Final data
+
+```{r}
+# small #183x44
+# large # 724x24
+
+# make sure when you guys run this code, get the same dimension
+```
+
+
+
+
+
+
+# Data selection
+
+(1) AIC
+
+```{r}
+# install.packages("MASS")
+library(MASS)
+fit <- lm(VWM_G ~ .-YEAR-PTID-SWM_G, data = large)
+summary(fit)
+step_fit <- stepAIC(fit, direction = "forward")
+step_fit2 <- stepAIC(fit, direction = "backward")
+# # - Limbic_Global_Efficiency
+# # - CorticalWhiteMatterVol
+# # - Ventral_Attention_Global_Efficiency
+# # - Default_Mode_Global_Efficiency
+# # - SCHOOL_YRS
+# # - non.WM.hypointensities
+# # - Right.Pallidum
+# # - AGE
+# # - ETHNICITY
+# model123 <- lm(VWM_G~Limbic_Global_Efficiency+CorticalWhiteMatterVol+Ventral_Attention_Global_Efficiency+Default_Mode_Global_Efficiency+SCHOOL_YRS+non.WM.hypointensities+Right.Pallidum+AGE+ETHNICITY,data=small)
+# summary(model123)
+```
+# Comment:
+# (1) AIC -> variables are too many, it does not work. (it takes too long maybe)
+
+
+
+
+(2) leaps package
+
+```{r message=FALSE, warning=FALSE}
+# install.packages('leaps')
+
+# library(leaps)
+# library(stats)
+# regfit.full=regsubsets(VWM_G ~ .-YEAR-PTID-SWM_G,large,nvmax=8,really.big=T)
+# reg.summary=summary(regfit.full)
+# min_adjr2 <- which.max(reg.summary$adjr2) #9
+# min_cp <- which.min(reg.summary$cp) #9
+# min_bic <- which.min(reg.summary$bic) #9
+# par(mfrow=c(2,2))
+# plot(reg.summary$adjr2,type="l",xlab="No. of variables", ylab="Adjusted R2")
+# points(min_adjr2,reg.summary$adjr2[min_adjr2],col="red",cex=2,pch=20)
+# plot(reg.summary$cp,ylab="Cp",type="l")
+# points(min_cp,reg.summary$cp[min_cp],col="red",cex=2,pch=20)
+# plot(reg.summary$bic, ylab="BIC",type="l")
+# points(min_bic,reg.summary$bic[min_bic],col="red",cex=2,pch=20)
+```
+# comment:
+# (2) leaps package -> variables are too many, it does not work. (it takes too long maybe)
+
+
+
+
+(3) forward
+
+```{r}
+library(leaps)
+library(stats)
+forward_sel <- regsubsets(VWM_G ~ .-YEAR-PTID-SWM_G,large, nbest = 1, nvmax = 8, intercept = TRUE, method = "forward", really.big = TRUE)
+sumF <- summary(forward_sel)
+
+plot(sumF$bic, xlab = "Number of Variables", ylab = "BIC", type = "l")
+
+min = which.min(sumF$bic)
+
+points(min, sumF$bic[min], col = "red", cex = 2, pch = 20)
+
+modelwith.minimum.BIC.fwd <- which.min(sumF$bic) 
+
+best.model.fwd <- sumF$which[modelwith.minimum.BIC.fwd,] 
+
+print(best.model.fwd)
+# AGE
+# ETHNICITY
+# SCHOOL_YRS
+# zodiac
+# RESIDENCE
+# SCHOOL_MOTHER_DEGREE
+
+fit <- lm(VWM_G ~ AGE+ETHNICITY+zodiac+SCHOOL_YRS+RESIDENCE+SCHOOL_MOTHER_DEGREE, data = large)
+summary(fit)
+
+
+```
+# comment:
+# (3) forward -> forward with BIC is better than the ones previously, but still bad.
+
+
+
+
+
+(4) backward
+
+```{r}
+
+backward_sel <- regsubsets(VWM_G ~ .-YEAR-PTID-SWM_G,large, nbest = 1, nvmax = 8, intercept = TRUE, method = "backward",really.big = TRUE) 
+sumB <- summary(backward_sel)
+plot(sumB$bic, xlab = "Number of Variables", ylab = "BIC", type = "l") 
+min = which.min(sumB$bic)
+points(min, sumB$bic[min], col = "red", cex = 2, pch = 20)
+modelwith.minimum.BIC.bwd <- which.min(sumB$bic) 
+
+best.model.bwd <- sumB$which[modelwith.minimum.BIC.bwd,]
+print(best.model.bwd)
+print(sum(best.model.bwd))
+# FATHER_ETH_MAIN11
+# MOTHER_ETH_MAIN9
+# zodiacRat
+# SCHOOL_MOTHER_DEGREE6
+# SCHOOL_DEGREE2
+# SCHOOL_DEGREE5
+# AGE
+
+fit <- lm(VWM_G ~ AGE+zodiac+FATHER_ETH_MAIN+MOTHER_ETH_MAIN+SCHOOL_MOTHER_DEGREE+SCHOOL_DEGREE, data = large)
+summary(fit)
+```
+# comment:
+# (4) backward -> backward with BIC is better than the ones previously, but still bad.
+
+
+
+
+
+## Do analysis that functions for variable selection as well
+
+
+(1) Random Forest
+
+```{r}
+set.seed(100)
+# install.packages("randomForest")
+library(randomForest)
+
+# Fit random forest model
+rf <- randomForest(VWM_G ~ .-YEAR-PTID-SWM_G, data = large, importance = TRUE)
+
+# View importance measures
+importance(rf)
+
+# Plot variable importance
+varImpPlot(rf)
+
+# Sort variables by importance
+imp <- importance(rf, type = 1)
+imp_sorted <- sort(imp[,1], decreasing = TRUE)
+
+# Extract names of variables in order of importance
+vars_sorted <- rownames(imp)[order(imp[,1], decreasing = TRUE)]
+
+# Print variables in order of importance
+print(vars_sorted)
+
+
+fit135 <- lm(VWM_G ~ AGE+SCHOOL_YRS+SCHOOL_DEGREE+SCHOOL_MOTHER_DEGREE+CHAPSOC_TOTAL+HOPKINS_AVG+SCHOOL_MOTHER_YRS+SCHOOL_FATHER_YRS+GENDER,
+    small
+  )
+summary(fit135)
+
+```
+# comment:
+# (1) Random Forest -> I want to see which variables are important. I made a model based on result, and it looks bad.
+
+
+
+
+
+(2) XGBoost
+
+```{r}
+# install.packages("xgboost")
+library(xgboost)
+library(caret)
+set.seed(1000)
+XG_data <- subset(large,select=-c(PTID,YEAR,SWM_G))
+
+xgbGrid <- expand.grid(nrounds = 500,
+                       max_depth = 4,
+                       eta = .05,
+                       gamma = 0,
+                       colsample_bytree = .5,
+                       min_child_weight = 1,
+                       subsample = 1)
+formula = VWM_G ~ .
+fitControl <- trainControl(method="cv",number = 5)
+memoryDataModelXGB = train(formula, data = XG_data,
+                   method = "xgbTree",trControl = fitControl,
+                   tuneGrid = xgbGrid,na.action = na.pass,metric="RMSE")
+importance = varImp(memoryDataModelXGB)
+PlotImportance(importance)
+memoryDataModelXGB
+
+```
+# comment:
+# (2) XGBoost -> hard to tell which variables are important.
+#    RMSE       Rsquared    MAE      
+#  0.7697241  0.08148694  0.6154321
+
+
+
+
+
+
+
+(3) Linear Regression model w/ Cross Validation
+
+```{r}
+set.seed(1000)
+
+# CV_data <- data_with_rooms
+CV_data <- subset(large,select=-c(PTID,YEAR,SWM_G))
+library(caret)
+formula = VWM_G ~ .
+fitControl <- trainControl(method="cv",number = 5)
+memoryDataModel = train(formula, data = CV_data,
+                   method = "lm",trControl = fitControl,metric="RMSE")
+importance = varImp(memoryDataModel)
+
+
+PlotImportance = function(importance)
+{
+  varImportance <- data.frame(Variables = row.names(importance[[1]]), 
+                              Importance = round(importance[[1]]$Overall,2))
+  
+  rankImportance <- varImportance %>%
+    mutate(Rank = paste0('#',dense_rank(desc(Importance))))
+  
+  rankImportancefull = rankImportance
+  
+  ggplot(rankImportance, aes(x = reorder(Variables, Importance), 
+                             y = Importance)) +
+    geom_bar(stat='identity',colour="white") +
+    geom_text(aes(x = Variables, y = 1, label = Rank),
+              hjust=0, vjust=.5, size = 4, colour = 'black',
+              fontface = 'bold') +
+    labs(x = 'Variables', title = 'Relative Variable Importance') +
+    coord_flip() + 
+    theme_bw()
+}
+PlotImportance(importance)
+memoryDataModel
+```
+# comment:
+# (3) Linear Regression model w/ Cross Validation -> hard to tell which variables are important.
+#    RMSE       Rsquared    MAE      
+#  0.7820632  0.09142202  0.6210745
+
+
+
+
+
+(4) Ridge and Lasso Regression
+
+```{r}
+set.seed(1001)
+
+RR_data <- subset(large,select=-c(PTID,YEAR,SWM_G))
+library(caret)
+formula = VWM_G ~ .
+fitControl2 <- trainControl(method="cv",number = 5)
+memoryDataModel2 = train(formula, data = RR_data,
+                   method = "glmnet",trControl = fitControl2,metric="RMSE")
+importance = varImp(memoryDataModel2)
+
+PlotImportance = function(importance)
+{
+  varImportance <- data.frame(Variables = row.names(importance[[1]]), 
+                              Importance = round(importance[[1]]$Overall,2))
+  rankImportance <- varImportance %>%
+    mutate(Rank = paste0('#',dense_rank(desc(Importance))))
+  rankImportancefull = rankImportance
+  
+  ggplot(rankImportance, aes(x = reorder(Variables, Importance), 
+                             y = Importance)) +
+    geom_bar(stat='identity',colour="white") +
+    geom_text(aes(x = Variables, y = 1, label = Rank),
+              hjust=0, vjust=.5, size = 4, colour = 'black',
+              fontface = 'bold') +
+    labs(x = 'Variables', title = 'Relative Variable Importance') +
+    coord_flip() + 
+    theme_bw()
+}
+
+PlotImportance(importance)
+memoryDataModel2
+```
+# Comment:
+# (4) Ridge and Lasso Regression -> little bit better, but almost the same
+#  RMSE       Rsquared    MAE 
+# 0.7183195  0.13413397  0.5784372
+
+
+
+
+
+
+(5) Another Random forest
+
+```{r}
+set.seed(1000)
+library('tidyverse')
+library('tidymodels')
+
+
+
+final_dat <- subset(large,select=-c(PTID,YEAR,SWM_G))
+
+
+
+final_dat -> final_pre
+final_pre %>%
+  initial_split(prop=0.8) -> final_split
+
+final_split %>% training() %>%
+  recipe(VWM_G~.) %>%
+  prep() -> final_recipe
+
+final_recipe %>%
+  bake(final_split %>% testing()) -> final_testing
+
+final_recipe %>%
+  juice() -> final_training
+
+rand_forest(trees=100, mode='regression') %>%
+  set_engine('randomForest') %>%
+  fit(VWM_G~., data=final_training) -> final_rf
+
+
+library(yardstick)
+final_rf %>%
+  predict(final_testing) %>%
+  bind_cols(final_testing) %>%
+  metrics(truth=VWM_G, estimate=.pred)
+
+final_pre %>%
+  recipe(VWM_G~.) %>%
+  prep() -> final_recipe2
+
+final_recipe2 %>%
+  bake(final_pre) -> final_testing_pre
+
+final_recipe2 %>%
+  juice() -> final_training_pre
+
+rand_forest(trees=100, mode='regression') %>%
+  set_engine('randomForest', localImp=TRUE) %>%
+  fit(VWM_G~., data=final_training_pre) -> final_rf2
+
+pp <- final_rf2 %>%
+  predict(final_testing_pre) %>%
+  bind_cols(final_pre)
+
+
+x <- pp$.pred
+y <- pp$VWM_G
+plot(x, y, main = "Predicted VWM_G VS Actual VWM_G",
+     xlab = "Predicted VWM_G", ylab = "Actual VWM_G",
+     pch = 19, frame = FALSE)
+abline(lm(y ~ x, data = pp), col = "blue")
+abline(a=0, b=1, col= "red")
+
+# install.packages('randomForestExplainer')
+library('randomForestExplainer')
+
+measure_importance(final_rf2$fit)
+
+
+measure_importance(final_rf2$fit) %>%
+  as_tibble() %>%
+  mutate(imp=node_purity_increase*100/max(node_purity_increase)) %>%
+  arrange(-imp) %>%
+  select(variable, imp) # Rank of important predictors
+
+mm <- measure_importance(final_rf2$fit)[,c(1,8)]
+subset_df <- mm[mm$p_value < 0.5, ]
+subset_df
+
+```
+# Comment:
+# (5) Another Random forest -> comparable with (4) Ridge and Lasso Regression.
+#  rmse	 	       rsq 	         mae
+# 0.7471166   0.1308461      0.6102524
+
+
+
+
+
+
+(6) RF(Random Forest) by changmin
+
+```{r}
+library(caret)
+library(randomForest)
+set.seed(123)
+large_temp_VWM_G <- subset(large,select=-c(PTID,YEAR,SWM_G))
+# library(caret)
+trainIndex <- createDataPartition(large_temp_VWM_G$VWM_G, p = 0.7,
+list = FALSE)
+
+train <- large_temp_VWM_G[trainIndex, ]
+test <- large_temp_VWM_G[-trainIndex, ]
+
+
+# Random Forest
+
+recommended.mtry <-floor(sqrt(ncol(train))) ## pre-specified m value
+## Fit a random forest.
+train.RF <- randomForest(VWM_G ~ .,
+data = train, mtry = recommended.mtry,
+ntree = 500, importance = TRUE)
+varImpPlot(train.RF, type = 2, scale = F) # Gini
+
+# sqrt(mean((test$VWM_G - predict(train.RF, test))^2)) sqrt 해줘야하는거 아닌지?
+# mean((test$VWM_G - predict(train.RF, test)))
+
+# Compute evaluation metrics
+predictions <- predict(train.RF, test)
+rmse <- sqrt(mean((test$VWM_G - predictions)^2))
+rsq <- cor(test$VWM_G, predictions)^2
+mae <- mean(abs(test$VWM_G - predictions))
+
+
+# Print the evaluation metrics
+cat("rmse:", rmse, "\n")
+cat("rsq:", rsq, "\n")
+cat("mae:", mae, "\n")
+
+```
+# Comment:
+# (6) RF by changmin -> best so far
+#  rmse        R-squared     mae
+# 0.693388    0.1483052     0.5650105
+
+
+
+
+
+

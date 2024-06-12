@@ -1,0 +1,341 @@
+---
+title: "141xp final"
+author: "euijun kim"
+date: "2/21/2023"
+output:
+  pdf_document: default
+  html_document: default
+subtitle: Winter 2023
+header-includes:
+- \usepackage{float}
+- \renewcommand\thesubsection{\thesection(\alph{subsection})}
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+library(tidyverse)
+library(tidymodels)
+library(lubridate)
+library(glmnet)
+library(xgboost)
+library(ranger)
+library(reshape2)
+library(ranger)
+library(ggplot2)
+library(car)
+library(readxl)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+# Read the data and find some unnecessary and remove by hand first.
+
+```{r}
+getwd()
+# 'SCHOOL_MOTHER_YRS' %in% colnames(Demo_df) # There are some variables that only CNP data has. ex) CortexVol
+CNP_df <- read_excel("CNP.xlsx")
+CNP_df <- subset(CNP_df, select = -c(...1)) # removing some unnecessary variables
+CNP_df = as.data.frame(CNP_df)
+
+Birth_df <- read.csv("BirthYearsofCNP.csv") # looks okay
+
+Demo_df <- read.csv("HTAC_Demographics_Full.csv")
+Demo_df <- subset(Demo_df, select = -c(PATIENTS_NIMHID,SUBJECTID,SWITCHPTID,DEMO_INITIALS)) # removing some unnecessary variables.
+
+
+Memory_df <- read.csv("WM_RI_G_Scores_All_Available.csv")
+names(Memory_df)[2] <- "PTID"
+Memory_df = Memory_df[,-c(1,3)] # removing some unnecessary variables
+sum(is.na(Memory_df))
+CNP_three <- subset(CNP_df, select = c(PTID, VWM_G, SWM_G))
+merged_CNP_three <- merge(Memory_df, CNP_three, by = "PTID", all.x = TRUE)
+merged_CNP_three$VWM_G <- ifelse(is.na(merged_CNP_three$VWM_G.x), merged_CNP_three$VWM_G.y, merged_CNP_three$VWM_G.x)
+merged_CNP_three$SWM_G <- ifelse(is.na(merged_CNP_three$SWM_G.x), merged_CNP_three$SWM_G.y, merged_CNP_three$SWM_G.x)
+Memory_df <- subset(merged_CNP_three, select = c(PTID, VWM_G, SWM_G))
+sum(is.na(Memory_df))
+
+
+Health_df <- read_excel("HTAC_Qry_1405Health.xls") # This is optional data, so I won't do anything for now.
+Health_df = as.data.frame(Health_df)
+
+
+Hopkins_df <- read.csv("ChapmanHAMDHopkins_All.csv") # Here, Hopkins data has a lot of NAs. Let's take a look.
+new_Hopkins_df <- read_excel("HTAC_Qry_1516.xls")
+Hopkins_df$BMI = new_Hopkins_df$BMI
+```
+
+
+
+
+# Merge
+
+```{r}
+####
+larger_df <- Demo_df
+merged <- merge(larger_df, Birth_df, by = "PTID", all.x = TRUE)
+new_cols <- setdiff(names(Birth_df), names(larger_df))
+
+for (col in new_cols) {
+  larger_df[[col]] <- merged[[col]]
+}
+merged <- merge(larger_df, Hopkins_df, by = "PTID", all.x = TRUE)
+new_cols <- setdiff(names(Hopkins_df), names(larger_df))
+
+for (col in new_cols) {
+  larger_df[[col]] <- merged[[col]]
+}
+
+merged <- merge(larger_df, Memory_df, by = "PTID", all.x = TRUE)
+new_cols <- setdiff(names(Memory_df), names(larger_df))
+
+for (col in new_cols) {
+  larger_df[[col]] <- merged[[col]]
+}
+
+
+# check for duplicate column names ignoring case
+dup_cols <- duplicated(tolower(names(larger_df)))
+
+# print the duplicate column names, if any
+if (any(dup_cols)) {
+  cat("Duplicate column names: ", names(df)[dup_cols], "\n")
+} else {
+  cat("No duplicate column names.\n")
+}
+```
+
+
+
+
+
+
+
+
+# Remove some variables for some reasons.
+
+```{r}
+# Delete Date columns
+larger_df_temp <-
+  subset(
+    larger_df,
+    select = -c(
+      HEALTH_TESTDATE,
+      STARTDATE,
+      DEMO_TESTDATE,
+      SCID_TESTDATE,
+      SCID_DX1,
+      SCID_INITIALS,
+      HAMILTON_TESTDATE,
+      LA2KHEALTH_TESTDATE,
+      CHAPPER_TESTDATE,
+      CHAPPHY_TESTDATE,
+      CHAPSOC_TESTDATE,
+      SANS_TESTDATE,
+      SAPS_TESTDATE,
+      BPRS_TESTDATE,
+      HOPKINS_TESTDATE
+    )
+  )
+
+sans_cols2 <- grepl("^SANS\\d+$", colnames(larger_df_temp))
+larger_df_temp$SANS_AVG <- rowMeans(larger_df_temp[, sans_cols2])
+
+saps_cols2 <- grepl("^SAPS\\d+$", colnames(larger_df_temp))
+larger_df_temp$SAPS_AVG <- rowMeans(larger_df_temp[, saps_cols2])
+
+bprs_cols2 <- grepl("^BPRS\\d+$", colnames(larger_df_temp))
+larger_df_temp$BPRS_AVG <- rowMeans(larger_df_temp[, bprs_cols2])
+
+hopkins_cols2 <- grepl("^HOPKINS\\d+$", colnames(larger_df_temp))
+larger_df_temp$HOPKINS_AVG <- rowMeans(larger_df_temp[, hopkins_cols2])
+
+# Delete some highly correlated columns
+
+# get the column names to remove
+cols_to_remove1 <- paste0("HAMILTON", 1:28)
+cols_to_remove2 <- c("HAMD_17","HAMD_21","HEALTH_INITIALS","HAMILTON_INITIALS","HAMILTON16A","HAMILTON16B","HAMILTON18A","HAMILTON18B")
+cols_to_remove3 <- paste0("HOPKINS", 1:58)
+cols_to_remove4 <- c("HOPKINS_INITIALS","HOPKINS_SOMATIZATION","HOPKINS_OBSCOMP","HOPKINS_INTSENSITIVITY","HOPKINS_DEPRESSION","HOPKINS_ANXIETY","HOPKINS_GLOBALSEVERITY")
+cols_to_remove5 <- paste0("LA2KHEALTH",1:21)
+cols_to_remove6 <- c("LA2KHEALTH_INITIALS","LA2KHEALTH18_LOST","LA2KHEALTH18_GAIN","LA2KHEALTH16S","LA2KHEALTH14S")
+cols_to_remove7 <- paste0("CHAPPER",1:35)
+cols_to_remove8 <- c("CHAPPER_INITIALS")
+cols_to_remove9 <- paste0("CHAPSOC",1:40)
+cols_to_remove10 <- c("CHAPSOC_INITIALS")
+cols_to_remove11 <- paste0("CHAPPHY",1:61)
+cols_to_remove12 <- c("CHAPPHY_INITIALS")
+cols_to_remove13 <- paste0("SANS",1:24)
+cols_to_remove14 <- c("SANS_INITIALS","FACTOR_BLUNTAFFECT","FACTOR_ALOGIA","FACTOR_AVOLITION","FACTOR_ANHEDONIA"
+,"FACTOR_ATTENTION","GLOBAL_BLUNTAFFECT","GLOBAL_ALOGIA","GLOBAL_AVOLITION","GLOBAL_ANHEDONIA","GLOBAL_ATTENTION")
+cols_to_remove15 <- paste0("SAPS",1:35)
+cols_to_remove16 <- c("SAPS_INITIALS","FACTOR_HALLUCINATIONS","FACTOR_DELUSIONS","FACTOR_BIZARREBEHAV","FACTOR_BIZARREBEHAV","FACTOR_POSFORMALTHOUGHT","FACTOR_INAPPAFFECT","GLOBAL_HALLUCINATIONS","GLOBAL_DELUSIONS","GLOBAL_BIZARREBEHAV","GLOBAL_POSFORMALTHOUGHT","GLOBAL_INAPPAFFECT")
+cols_to_remove17 <- paste0("BPRS",1:24)
+cols_to_remove18 <- c("BPRS_INITIALS","BPRS_MANIA","BPRS_NEGATIVE","BPRS_POSITIVE","BPRS_DEPANX")
+
+cols_to_remove <- c()
+for (i in 1:18) {
+  cols <- get(paste0("cols_to_remove", i))
+  cols_to_remove <- c(cols_to_remove, cols)
+}
+
+
+### Larger
+# remove the columns
+larger_df_temp <- larger_df_temp[, -which(colnames(larger_df_temp) %in% cols_to_remove)]
+# print the result
+larger_df_temp
+
+
+# Load the temp data sets again.
+larger_df = larger_df_temp
+
+dim(larger_df)
+
+```
+
+
+
+
+
+
+# Here, I will remove columns with more than 5% missing values for larger.
+
+```{r}
+larger_df[larger_df == ""] <- NA
+# which(colnames(larger_df) == "VWM_G")
+# which(colnames(larger_df) == "SWM_G")
+larger_df_temp = larger_df[,-c(111,112)] # make temp data for response variables
+# colnames(larger_df)
+
+# Calculate the percentage of missing values for each column
+missing_percent2 <- colMeans(is.na(larger_df_temp)) * 100
+# Get the column names with more than 30% missing values
+cols_to_remove2 <- names(missing_percent2[missing_percent2 > 5])
+# Remove the columns with more than 30% missing values
+larger_df_clean <- larger_df_temp[, !names(larger_df_temp) %in% cols_to_remove2]
+# Print the cleaned dataset
+larger_df_clean = cbind(larger_df_clean,larger_df[,c(111,112)])
+
+dim(larger_df_clean)
+```
+
+
+
+
+
+
+
+
+
+
+# Larger data drop NA
+
+```{r}
+# Use colSums() to count the number of NA values in each column
+na_counts <- colSums(is.na(larger_df_clean))
+# Print the result
+na_counts
+
+## Dealing with NA values
+larger_df_NA_drop <- drop_na(larger_df_clean)
+sum(is.na(larger_df_NA_drop))
+```
+
+
+
+
+
+
+
+# Sort the data by PTID
+
+```{r}
+larger_df_NA_drop <- larger_df_NA_drop[order(larger_df_NA_drop$PTID), ]
+row.names(larger_df_NA_drop) <- NULL
+larger_df_NA_drop# [763 × 35]
+large_df = larger_df_NA_drop
+```
+
+
+
+
+# Handle ordinal variable
+
+```{r}
+large_df$GENDER <- factor(large_df$GENDER, labels = c("male", "female"))
+large_df$ETHNICITY <- factor(large_df$ETHNICITY, labels = c("Hispanic origin", "Non_Hispanic origin"))
+# ADOPT
+large_df$ADOPT <- factor(large_df$ADOPT, labels = c("No", "Yes"))
+# SEXUALITY_OPT
+large_df$SEXUALITY_OPT <- factor(large_df$SEXUALITY_OPT, labels = c("No", "Yes"))
+# SCHOOL_BACK
+large_df$SCHOOL_BACK <- factor(large_df$SCHOOL_BACK, labels = c("No", "Yes"))
+# MILITARY
+large_df$MILITARY <- factor(large_df$MILITARY, labels = c("No", "Yes"))
+
+# vector to use convert into factor (more than two levels)
+
+factor_cols2 <-
+  c(
+    "BIRTH_LOC",
+    "LANGUAGE1",
+    "RACE_MAIN",
+    "MOTHER_ETH_MAIN",
+    "FATHER_ETH_MAIN",
+    "RELIGION",
+    "CIVIL_STAT",
+    "SEXUALITY",
+    "OCCUPATION",
+    "RESPONSJOB",
+    "SCHOOL_DEGREE",
+    "SCHOOL_MOTHER_DEGREE",
+    "CIGS",
+    "RESIDENCE",
+    "SCHOOL_FATHER_DEGREE"
+  )
+
+for (col in factor_cols2) {
+  large_df[[col]] <- as.factor(large_df[[col]])
+}
+
+# BIRTH_LOC
+# RACE_MAIN
+# MOTHER_ETH_MAIN
+# FATHER_ETH_MAIN
+# SEXUALITY
+# OCCUPATION
+# SCHOOL_DEGREE
+# SCHOOL_MOTHER_DEGREE
+# SCHOOL_FATHER_DEGREE (only in larger data)
+
+# Define weird values as a vector
+
+weird_cols2 <- c("SEXUALITY", "MOTHER_ETH_MAIN","FATHER_ETH_MAIN","OCCUPATION","SCHOOL_MOTHER_DEGREE","BIRTH_LOC","RACE_MAIN","SCHOOL_DEGREE","SCHOOL_FATHER_DEGREE")
+
+weird_values <- c("-9999", "-9998")
+
+# Remove rows with weird values in any of the specified columns
+large_df_removing_weird_value <- large_df[!apply(large_df[, weird_cols2], 1, function(x) any(x %in% weird_values)), ]
+
+large_df_removing_weird_value$SEXUALITY <-  droplevels(large_df_removing_weird_value$SEXUALITY)
+large_df_removing_weird_value$MOTHER_ETH_MAIN <-  droplevels(large_df_removing_weird_value$MOTHER_ETH_MAIN)
+large_df_removing_weird_value$FATHER_ETH_MAIN <-  droplevels(large_df_removing_weird_value$FATHER_ETH_MAIN)
+large_df_removing_weird_value$OCCUPATION <-  droplevels(large_df_removing_weird_value$OCCUPATION)
+large_df_removing_weird_value$SCHOOL_MOTHER_DEGREE <-  droplevels(large_df_removing_weird_value$SCHOOL_MOTHER_DEGREE)
+large_df_removing_weird_value$BIRTH_LOC <-  droplevels(large_df_removing_weird_value$BIRTH_LOC)
+large_df_removing_weird_value$RACE_MAIN <-  droplevels(large_df_removing_weird_value$RACE_MAIN)
+large_df_removing_weird_value$SCHOOL_DEGREE <-  droplevels(large_df_removing_weird_value$SCHOOL_DEGREE)
+large_df_removing_weird_value$SCHOOL_FATHER_DEGREE <-  droplevels(large_df_removing_weird_value$SCHOOL_FATHER_DEGREE)
+```
+
+
+
+
+
+# Export the data frame as a CSV file
+
+```{r}
+write.csv(large_df_removing_weird_value, "larger.csv", row.names = FALSE)
+```
+
